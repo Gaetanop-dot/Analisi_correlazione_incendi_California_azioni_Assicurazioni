@@ -1,0 +1,114 @@
+# Installazione e caricamento dei pacchetti necessari
+install.packages(c("quantmod", "ggplot2", "dplyr", "lubridate"))
+library(quantmod)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+
+# Cerchiamo e scarichiamo i dati finanziari delle compagnie assicurative
+# AIG (American International Group) - ALL (Allstate Corporation) - TRV (The Travelers Companies) - HIG (The Hartford Financial Services Group) - PGR (Progressive Corporation)
+symbols <- c("AIG", "ALL", "TRV", "HIG", "PGR")  # Ticker delle compagnie assicurative
+
+getSymbols(symbols, src = 'yahoo', from = '2024-12-01', to = '2025-01-31')
+
+# Creiamo un dataframe con i prezzi settimanali
+stock_data <- do.call(rbind, lapply(symbols, function(sym) {
+  tryCatch({
+    weekly <- to.weekly(get(sym))  # Dati settimanali
+    data.frame(
+      Date = index(weekly),        # Data
+      Symbol = sym,                # Simbolo della compagnia
+      Price = as.numeric(Cl(weekly)),  # Prezzo di chiusura (Cl)
+      stringsAsFactors = FALSE
+    )
+  }, error = function(e) {
+    warning(paste("Errore nel processare", sym, ":", e$message))
+    NULL
+  })
+}))
+
+# Facciamo  una Verifica preliminare
+stopifnot(
+  "Price" %in% names(stock_data),  # dobbiamo accertarci che la colonna Price esista
+  !all(is.na(stock_data$Price))    
+)
+
+# Carichiamo i dati sugli incendi dal file CSV, che per comodità chiamerò "incendi_california_2025.csv" con le colonne "Data" e "Ettari"
+incendi <- read.csv("C:\\Program Files\\incendi_california_2025.csv") %>% 
+  mutate(
+    Data = as.Date(Data, format = "%Y-%m-%d"),  # Convertamo la colonna Data in formato Date
+    Week = week(Data)  # Aggiungiamo una colonna per la settimana
+  ) %>% 
+  filter(Data >= as.Date("2024-12-01") & Data <= as.Date("2025-01-31"))  # Qui aggiungiamo il filtro per il periodo di interesse
+
+# Elaboriamo i dati per calcolare la correlazione, quindi
+# 1 Dati incendi settimanali
+incendi_settimanali <- incendi %>% 
+  group_by(Week) %>% 
+  summarise(
+    Ettari_Bruciati = sum(Ettari, na.rm = TRUE),  # Somma degli ettari bruciati per settimana
+    .groups = "drop"
+  ) %>% 
+  mutate(Week = as.numeric(Week))  # Forziamo sta benedetta colonna Week a essere numerica
+
+# 2 Dati finanziari settimanali
+stock_data_settimanale <- stock_data %>% 
+  mutate(Week = week(Date)) %>%  # Aggiungiamo una colonna per la settimana
+  group_by(Week, Symbol) %>% 
+  summarise(
+    Price = mean(Price, na.rm = TRUE),  # qui ci mettiamo il prezzo medio settimanale
+    .groups = "drop"
+  ) %>% 
+  mutate(Week = as.numeric(Week))  # Ripetiamo la forzatura
+
+# Uniamo i dati con controllo delle colonne
+# Facciamo una verifica preliminare
+stopifnot(
+  "Week" %in% names(incendi_settimanali),
+  "Week" %in% names(stock_data_settimanale)
+)
+
+dati_completi <- inner_join(
+  incendi_settimanali,
+  stock_data_settimanale,
+  by = "Week"
+)
+
+# Qui calcolo la correlazione con gestione di NA
+correlazione <- dati_completi %>% 
+  group_by(Symbol) %>% 
+  summarise(
+    Correlazione = cor(Ettari_Bruciati, Price, use = "complete.obs"),  # Correlazione
+    .groups = "drop"
+  )
+
+print(correlazione)
+
+# In ultimo per la visualizzazione, Creaiamo 5 grafici distinti (uno per compagnia)
+if(nrow(dati_completi) > 0) {
+  # Ciclo per creare un grafico per ciascuna compagnia
+  for(sym in symbols) {
+    # Filtriamo i dati per la compagnia corrente
+    dati_compagnia <- dati_completi %>% filter(Symbol == sym)
+    
+    # Crea il grafico
+    p <- ggplot(dati_compagnia, aes(x = Ettari_Bruciati, y = Price)) +
+      geom_point(color = "blue") +  # Punti per i dati osservati
+      geom_smooth(method = "lm", se = FALSE, color = "red") +  # Linea di tendenza
+      labs(
+        title = paste("Correlazione Ettari Bruciati - Prezzo Azioni", sym),
+        x = "Ettari Bruciati",
+        y = "Prezzo Azioni"
+      ) +
+      theme_minimal()
+    
+    # Mostra il grafico
+    print(p)
+  }
+} else {
+  warning("Nessun dato disponibile per i grafici")
+}
+# -- Da questa analisi preliminare, Seppure non è estremamente significativa, la correlazione tra i due eventi è risultata evidente.
+# -- notiamo una correlazione negativa tra la quantità di ettari bruciati e l'andamento azionario delle aziende scelte.
+# -- Sarebbe da analizzare magari considerando ulteriori variabili, azioni ed eventuali possibili effetti su scenari futuri.
+# -- FINE
